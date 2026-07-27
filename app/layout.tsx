@@ -13,8 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Nền Sạch — Đổi nền trắng, giữ trọn chi tiết",
-  description: "Công cụ xóa nền trắng miễn phí, xử lý riêng tư ngay trên thiết bị.",
+  title: "Nền Trắng — Làm trắng nền, giữ nguyên chủ thể",
+  description:
+    "Công cụ chuẩn hóa nền ảnh thành trắng tinh, miễn phí và xử lý riêng tư ngay trên thiết bị.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

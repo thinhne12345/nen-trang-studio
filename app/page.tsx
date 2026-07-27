@@ -1,90 +1,284 @@
 "use client";
 
-import { ChangeEvent, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  DragEvent,
+  KeyboardEvent,
+  useRef,
+  useState,
+} from "react";
+import { normalizeExteriorWhiteBackground } from "./white-background";
 
-type Result = { src: string; name: string } | null;
+type Result = {
+  src: string;
+  name: string;
+  width: number;
+  height: number;
+};
+
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
+const MAX_PIXEL_COUNT = 40_000_000;
+const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [result, setResult] = useState<Result>(null);
-  const [threshold, setThreshold] = useState(34);
+  const jobRef = useRef(0);
+  const [sourceFile, setSourceFile] = useState<File | null>(null);
+  const [result, setResult] = useState<Result | null>(null);
+  const [sensitivity, setSensitivity] = useState(36);
   const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [error, setError] = useState("");
 
-  const process = (file: File) => {
+  const processFile = (file: File, nextSensitivity = sensitivity) => {
+    setError("");
+
+    if (!ACCEPTED_TYPES.has(file.type)) {
+      setError("Vui lòng chọn ảnh PNG, JPG hoặc WEBP.");
+      return;
+    }
+    if (file.size > MAX_FILE_SIZE) {
+      setError("Ảnh vượt quá 20 MB. Hãy chọn ảnh nhỏ hơn.");
+      return;
+    }
+
+    const job = ++jobRef.current;
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
     setBusy(true);
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
-      ctx.drawImage(img, 0, 0);
-      const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const p = data.data, w = canvas.width, h = canvas.height;
-      const seen = new Uint8Array(w * h), queue: number[] = [];
-      for (let x = 0; x < w; x++) { queue.push(x, (h - 1) * w + x); }
-      for (let y = 1; y < h - 1; y++) { queue.push(y * w, y * w + w - 1); }
-      // Chỉ dò vùng sáng nối với bốn mép ảnh. Nhờ vậy các chi tiết trắng
-      // nằm bên trong logo, áo và chủ thể không bị xóa.
-      const backgroundScore = (i: number) => {
-        const r = p[i * 4], g = p[i * 4 + 1], b = p[i * 4 + 2];
-        const distanceToWhite = Math.sqrt((255-r)**2 + (255-g)**2 + (255-b)**2);
-        const chroma = Math.max(r,g,b) - Math.min(r,g,b);
-        return distanceToWhite + chroma * 0.72;
-      };
-      const floodLimit = threshold * 1.75 + 20;
-      while (queue.length) {
-        const i = queue.pop()!; if (seen[i] || backgroundScore(i) > floodLimit) continue;
-        seen[i] = 1;
-        const x = i % w, y = Math.floor(i / w);
-        if (x) queue.push(i - 1); if (x < w - 1) queue.push(i + 1);
-        if (y) queue.push(i - w); if (y < h - 1) queue.push(i + w);
-      }
-      // Làm mềm viền 1–2 px và khử quầng trắng quanh tóc/logo.
-      const transparentAt = Math.max(8, threshold * .72);
-      for (let i = 0; i < w * h; i++) {
-        if (!seen[i]) continue;
-        const score = backgroundScore(i);
-        const alpha = Math.max(0, Math.min(1, (score - transparentAt) / 24));
-        p[i * 4 + 3] = Math.round(alpha * 255);
-        if (alpha > .04 && alpha < .98) {
-          for (let channel = 0; channel < 3; channel++) {
-            const cleaned = (p[i * 4 + channel] - (1-alpha) * 255) / alpha;
-            p[i * 4 + channel] = Math.max(0, Math.min(255, Math.round(cleaned)));
-          }
+    setResult(null);
+
+    image.onload = () => {
+      try {
+        const width = image.naturalWidth;
+        const height = image.naturalHeight;
+        if (!width || !height || width * height > MAX_PIXEL_COUNT) {
+          throw new Error(
+            "Ảnh quá lớn để xử lý an toàn. Kích thước tối đa là 40 triệu điểm ảnh.",
+          );
         }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) throw new Error("Trình duyệt không thể xử lý ảnh này.");
+
+        context.drawImage(image, 0, 0);
+        const imageData = context.getImageData(0, 0, width, height);
+        normalizeExteriorWhiteBackground(
+          imageData.data,
+          width,
+          height,
+          nextSensitivity,
+        );
+        context.putImageData(imageData, 0, 0);
+
+        const output = document.createElement("canvas");
+        output.width = width;
+        output.height = height;
+        const outputContext = output.getContext("2d");
+        if (!outputContext) throw new Error("Trình duyệt không thể xuất ảnh này.");
+
+        outputContext.fillStyle = "#ffffff";
+        outputContext.fillRect(0, 0, width, height);
+        outputContext.drawImage(canvas, 0, 0);
+
+        if (job === jobRef.current) {
+          setResult({
+            src: output.toDataURL("image/png"),
+            name: file.name.replace(/\.[^.]+$/, "") + "-nen-trang.png",
+            width,
+            height,
+          });
+        }
+      } catch (processingError) {
+        if (job === jobRef.current) {
+          setError(
+            processingError instanceof Error
+              ? processingError.message
+              : "Không thể xử lý ảnh. Vui lòng thử lại.",
+          );
+        }
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+        if (job === jobRef.current) setBusy(false);
       }
-      ctx.putImageData(data, 0, 0);
-      // Alpha chỉ được dùng nội bộ để làm sạch mép; ảnh tải xuống luôn có nền trắng.
-      const output = document.createElement("canvas");
-      output.width = w; output.height = h;
-      const outputCtx = output.getContext("2d")!;
-      outputCtx.fillStyle = "#ffffff";
-      outputCtx.fillRect(0, 0, w, h);
-      outputCtx.drawImage(canvas, 0, 0);
-      setResult({ src: output.toDataURL("image/png"), name: file.name.replace(/\.[^.]+$/, "") + "-white-background.png" });
-      setBusy(false);
     };
-    img.src = URL.createObjectURL(file);
+
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      if (job === jobRef.current) {
+        setBusy(false);
+        setError("Không thể đọc tệp ảnh này. Vui lòng chọn ảnh khác.");
+      }
+    };
+    image.src = objectUrl;
   };
 
-  const onFile = (e: ChangeEvent<HTMLInputElement>) => { const f = e.target.files?.[0]; if (f) process(f); };
+  const selectFile = (file: File) => {
+    setSourceFile(file);
+    processFile(file);
+  };
+
+  const onFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) selectFile(file);
+  };
+
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragging(false);
+    const file = event.dataTransfer.files[0];
+    if (file) selectFile(file);
+  };
+
+  const openPickerFromKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      inputRef.current?.click();
+    }
+  };
+
+  const reprocess = () => {
+    if (sourceFile) processFile(sourceFile, sensitivity);
+  };
 
   return (
     <main className="shell">
-      <nav><div className="brand"><span className="brand-mark">◒</span> Nền Sạch</div><span className="privacy">● Ảnh được xử lý ngay trên thiết bị</span></nav>
-      <section className="hero"><div className="eyebrow">XÓA NỀN TRẮNG • GIỮ NGUYÊN CHI TIẾT</div>
-        <h1>Đổi nền trắng.<br /><em>Giữ trọn chủ thể.</em></h1>
-        <p className="sub">Tách logo và ảnh người khỏi nền trắng trong vài giây — không làm mờ viền, không gửi ảnh lên đâu cả.</p>
-      </section>
-      <section className="workspace">
-        <div className="drop-card" onClick={() => inputRef.current?.click()} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); const f=e.dataTransfer.files[0]; if(f) process(f); }}>
-          <input ref={inputRef} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={onFile} />
-          <div className="upload-icon">↑</div><h2>{busy ? "Đang xử lý ảnh…" : "Kéo thả ảnh vào đây"}</h2><p>hoặc <button>chọn tệp từ máy</button></p><small>PNG, JPG hoặc WEBP · tối đa 20 MB</small>
+      <nav>
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            ◒
+          </span>
+          Nền Trắng
         </div>
-        <div className="tips"><div><b>01</b><span>Đưa ảnh logo, sản phẩm hoặc chân dung có nền trắng.</span></div><div><b>02</b><span>Nền trắng liền mạch sẽ tự động được làm trong suốt.</span></div><div><b>03</b><span>Tải PNG xuống để giữ nền trong suốt khi sử dụng.</span></div></div>
+        <span className="privacy">● Ảnh chỉ được xử lý trên thiết bị</span>
+      </nav>
+
+      <section className="hero">
+        <div className="eyebrow">NỀN TRẮNG TINH • GIỮ NGUYÊN CHỦ THỂ</div>
+        <h1>
+          Làm trắng nền.
+          <br />
+          <em>Giữ trọn chủ thể.</em>
+        </h1>
+        <p className="sub">
+          Chuẩn hóa phần nền sáng xung quanh thành trắng tinh như ảnh mẫu.
+          Không xóa nền, không làm trong suốt và không đổi kích thước ảnh.
+        </p>
       </section>
-      {result && <section className="result"><div className="result-head"><div><div className="eyebrow">ĐÃ XỬ LÝ XONG</div><h2>Xem trước kết quả</h2></div><a className="download" href={result.src} download={result.name}>Tải PNG xuống ↓</a></div><div className="preview"><img src={result.src} alt="Ảnh đã xóa nền" /></div><label>Độ nhạy nền trắng <input type="range" min="10" max="70" value={threshold} onChange={e => setThreshold(+e.target.value)} onMouseUp={() => { if (inputRef.current?.files?.[0]) process(inputRef.current.files[0]); }} /></label></section>}
-      <footer>Nền Sạch <span>•</span> Miễn phí · riêng tư · không watermark</footer>
+
+      <section className="workspace">
+        <div
+          className={`drop-card${dragging ? " is-dragging" : ""}`}
+          role="button"
+          tabIndex={0}
+          aria-label="Chọn ảnh cần làm nền trắng"
+          onClick={() => inputRef.current?.click()}
+          onKeyDown={openPickerFromKeyboard}
+          onDragEnter={() => setDragging(true)}
+          onDragLeave={() => setDragging(false)}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={onDrop}
+        >
+          <input
+            ref={inputRef}
+            hidden
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            onClick={(event) => {
+              event.currentTarget.value = "";
+            }}
+            onChange={onFile}
+          />
+          <div className="upload-icon" aria-hidden="true">
+            ↑
+          </div>
+          <h2>{busy ? "Đang làm trắng nền…" : "Kéo thả ảnh vào đây"}</h2>
+          <p>
+            hoặc <span className="choose-file">chọn tệp từ máy</span>
+          </p>
+          <small>PNG, JPG hoặc WEBP · tối đa 20 MB</small>
+        </div>
+
+        <div className="tips">
+          <div>
+            <b>01</b>
+            <span>Chọn ảnh chân dung, logo hoặc sản phẩm có nền trắng hay gần trắng.</span>
+          </div>
+          <div>
+            <b>02</b>
+            <span>Chỉ vùng nền sáng nối với mép ảnh được chuẩn hóa thành trắng tinh.</span>
+          </div>
+          <div>
+            <b>03</b>
+            <span>Tải PNG nền trắng liền mạch, giữ nguyên kích thước ảnh gốc.</span>
+          </div>
+        </div>
+      </section>
+
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+
+      {result && (
+        <section className="result" aria-live="polite">
+          <div className="result-head">
+            <div>
+              <div className="eyebrow">NỀN TRẮNG ĐÃ SẴN SÀNG</div>
+              <h2>Xem trước kết quả</h2>
+              <p className="result-meta">
+                {result.width} × {result.height} px · PNG nền trắng
+              </p>
+            </div>
+            <a className="download" href={result.src} download={result.name}>
+              Tải ảnh nền trắng ↓
+            </a>
+          </div>
+
+          <div className="preview-frame">
+            <div className="preview">
+              {/* Ảnh là data URL tạo tại chỗ nên không thể đi qua bộ tối ưu ảnh. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={result.src} alt="Ảnh có nền trắng đã hoàn tất" />
+            </div>
+          </div>
+
+          <div className="sensitivity">
+            <label htmlFor="sensitivity">
+              <span>
+                <b>Mức làm trắng nền</b>
+                <small>
+                  Tăng nếu nền còn hơi xám, giảm nếu viền chủ thể quá sáng.
+                </small>
+              </span>
+              <output>{sensitivity}</output>
+            </label>
+            <div className="range-row">
+              <input
+                id="sensitivity"
+                type="range"
+                min="10"
+                max="70"
+                value={sensitivity}
+                onChange={(event) => setSensitivity(Number(event.target.value))}
+                onPointerUp={reprocess}
+                onKeyUp={reprocess}
+              />
+              <button type="button" onClick={reprocess}>
+                Áp dụng lại
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      <footer>
+        Nền Trắng <span>•</span> Miễn phí · riêng tư · không watermark
+      </footer>
     </main>
   );
 }
