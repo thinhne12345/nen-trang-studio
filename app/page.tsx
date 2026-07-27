@@ -54,7 +54,14 @@ export default function Home() {
         }
       }
       ctx.putImageData(data, 0, 0);
-      setResult({ src: canvas.toDataURL("image/png"), name: file.name.replace(/\.[^.]+$/, "") + "-transparent.png" });
+      // Alpha chỉ được dùng nội bộ để làm sạch mép; ảnh tải xuống luôn có nền trắng.
+      const output = document.createElement("canvas");
+      output.width = w; output.height = h;
+      const outputCtx = output.getContext("2d")!;
+      outputCtx.fillStyle = "#ffffff";
+      outputCtx.fillRect(0, 0, w, h);
+      outputCtx.drawImage(canvas, 0, 0);
+      setResult({ src: output.toDataURL("image/png"), name: file.name.replace(/\.[^.]+$/, "") + "-white-background.png" });
       setBusy(false);
     };
     img.src = URL.createObjectURL(file);
