@@ -14,7 +14,12 @@ test("uses portrait matting before compositing onto solid white", async () => {
   assert.match(processor, /dtype:\s*"fp32"/);
   assert.match(page, /fillStyle = "#ffffff"/);
   assert.match(page, /outputContext\.drawImage\(cutout/);
-  assert.match(page, /AI tự động giữ lại người và loại bỏ toàn bộ nền/);
+  assert.match(page, /multiple/);
+  assert.match(page, /MAX_BATCH_SIZE = 20/);
+  assert.match(page, /for \(let index = 0; index < queue\.length; index\+\+\)/);
+  assert.match(page, /canvasToBlob/);
+  assert.match(page, /name:\s*file\.name/);
+  assert.match(page, /exterior\.isWhiteBackground/);
   assert.doesNotMatch(page, /normalizeExteriorWhiteBackground/);
   assert.match(packageJson, /"@huggingface\/transformers":\s*"[^"]+"/);
 });

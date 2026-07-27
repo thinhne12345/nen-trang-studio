@@ -4,6 +4,7 @@ import {
   ChangeEvent,
   DragEvent,
   KeyboardEvent,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -11,115 +12,283 @@ import {
   ModelProgress,
   removePortraitBackground,
 } from "./portrait-background";
+import { analyzeExteriorBackground } from "./white-background-detection";
 
 type Result = {
   src: string;
   name: string;
   width: number;
   height: number;
+  format: string;
+  preserved: boolean;
+};
+
+type QueueItem = {
+  id: string;
+  file: File;
+  status: "queued" | "processing" | "done" | "error";
+  result?: Result;
+  error?: string;
 };
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
+const MAX_PIXEL_COUNT = 30_000_000;
+const MAX_BATCH_SIZE = 20;
 const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+const FORMAT_LABELS: Record<string, string> = {
+  "image/png": "PNG",
+  "image/jpeg": "JPG",
+  "image/webp": "WEBP",
+};
+
+const loadSourceCanvas = (file: File) =>
+  new Promise<{
+    canvas: HTMLCanvasElement;
+    data: ImageData;
+  }>((resolve, reject) => {
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
+
+    image.onload = () => {
+      try {
+        if (
+          !image.naturalWidth ||
+          !image.naturalHeight ||
+          image.naturalWidth * image.naturalHeight > MAX_PIXEL_COUNT
+        ) {
+          throw new Error(
+            "Ảnh quá lớn để xử lý an toàn. Kích thước tối đa là 30 triệu điểm ảnh.",
+          );
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) throw new Error("Trình duyệt không thể đọc ảnh này.");
+        context.drawImage(image, 0, 0);
+        resolve({
+          canvas,
+          data: context.getImageData(0, 0, canvas.width, canvas.height),
+        });
+      } catch (error) {
+        reject(error);
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Không thể đọc tệp ảnh này."));
+    };
+    image.src = objectUrl;
+  });
+
+const canvasToBlob = (
+  canvas: HTMLCanvasElement,
+  type: string,
+  quality?: number,
+) =>
+  new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error("Trình duyệt không thể tạo tệp ảnh."));
+      },
+      type,
+      quality,
+    );
+  });
+
+const nextFrame = () =>
+  new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+async function createWhiteBackgroundResult(
+  file: File,
+  onProgress: (progress: ModelProgress) => void,
+): Promise<Result> {
+  const source = await loadSourceCanvas(file);
+  const exterior = analyzeExteriorBackground(
+    source.data.data,
+    source.canvas.width,
+    source.canvas.height,
+  );
+
+  const cutout = document.createElement("canvas");
+  cutout.width = source.canvas.width;
+  cutout.height = source.canvas.height;
+
+  if (exterior.isWhiteBackground) {
+    const context = cutout.getContext("2d");
+    if (!context) throw new Error("Trình duyệt không thể giữ nguyên ảnh này.");
+    // Ảnh đã nền trắng được giữ nguyên hoàn toàn, tránh tách AI lần hai làm
+    // mất tóc, áo hoặc pixel màu sát mép và đáy.
+    context.drawImage(source.canvas, 0, 0);
+  } else {
+    onProgress({ percent: 0, status: "loading" });
+    const foreground = await removePortraitBackground(file, onProgress);
+    cutout.width = foreground.width;
+    cutout.height = foreground.height;
+    const context = cutout.getContext("2d");
+    if (!context) throw new Error("Trình duyệt không thể tách nền ảnh này.");
+    context.putImageData(
+      new ImageData(foreground.data, foreground.width, foreground.height),
+      0,
+      0,
+    );
+  }
+
+  const output = document.createElement("canvas");
+  output.width = cutout.width;
+  output.height = cutout.height;
+  const outputContext = output.getContext("2d");
+  if (!outputContext) throw new Error("Trình duyệt không thể xuất ảnh này.");
+  outputContext.fillStyle = "#ffffff";
+  outputContext.fillRect(0, 0, output.width, output.height);
+  outputContext.drawImage(cutout, 0, 0);
+
+  const blob = await canvasToBlob(
+    output,
+    file.type,
+    file.type === "image/png" ? undefined : 0.96,
+  );
+
+  return {
+    src: URL.createObjectURL(blob),
+    name: file.name,
+    width: output.width,
+    height: output.height,
+    format: FORMAT_LABELS[file.type] ?? "Ảnh",
+    preserved: exterior.isWhiteBackground,
+  };
+}
 
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const jobRef = useRef(0);
-  const [result, setResult] = useState<Result | null>(null);
+  const resultUrlsRef = useRef<string[]>([]);
+  const [items, setItems] = useState<QueueItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [error, setError] = useState("");
   const [progress, setProgress] = useState<ModelProgress | null>(null);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [currentName, setCurrentName] = useState("");
+  const [notice, setNotice] = useState("");
 
-  const processFile = async (file: File) => {
-    setError("");
+  useEffect(
+    () => () => {
+      for (const url of resultUrlsRef.current) URL.revokeObjectURL(url);
+    },
+    [],
+  );
 
-    if (!ACCEPTED_TYPES.has(file.type)) {
-      setError("Vui lòng chọn ảnh PNG, JPG hoặc WEBP.");
-      return;
-    }
-    if (file.size > MAX_FILE_SIZE) {
-      setError("Ảnh vượt quá 20 MB. Hãy chọn ảnh nhỏ hơn.");
-      return;
-    }
+  const updateItem = (id: string, patch: Partial<QueueItem>) => {
+    setItems((current) =>
+      current.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+    );
+  };
 
-    const job = ++jobRef.current;
+  const processFiles = async (selectedFiles: File[]) => {
+    if (busy || selectedFiles.length === 0) return;
+
+    for (const url of resultUrlsRef.current) URL.revokeObjectURL(url);
+    resultUrlsRef.current = [];
+
+    const files = selectedFiles.slice(0, MAX_BATCH_SIZE);
+    setNotice(
+      selectedFiles.length > MAX_BATCH_SIZE
+        ? `Chỉ xử lý ${MAX_BATCH_SIZE} ảnh đầu tiên trong lần này.`
+        : "",
+    );
+
+    const queue: QueueItem[] = files.map((file, index) => ({
+      id: `${Date.now()}-${index}-${file.name}`,
+      file,
+      status: "queued",
+    }));
+    setItems(queue);
     setBusy(true);
-    setResult(null);
-    setProgress({ percent: 0, status: "loading" });
 
-    try {
-      const foreground = await removePortraitBackground(file, (nextProgress) => {
-        if (job === jobRef.current) setProgress(nextProgress);
-      });
-      if (job !== jobRef.current) return;
+    for (let index = 0; index < queue.length; index++) {
+      const item = queue[index];
+      setCurrentIndex(index + 1);
+      setCurrentName(item.file.name);
+      setProgress({ percent: 100, status: "processing" });
+      updateItem(item.id, { status: "processing", error: undefined });
+      await nextFrame();
 
-      const cutout = document.createElement("canvas");
-      cutout.width = foreground.width;
-      cutout.height = foreground.height;
-      const cutoutContext = cutout.getContext("2d");
-      if (!cutoutContext) throw new Error("Trình duyệt không thể xử lý ảnh này.");
-      cutoutContext.putImageData(
-        new ImageData(foreground.data, foreground.width, foreground.height),
-        0,
-        0,
-      );
+      try {
+        if (!ACCEPTED_TYPES.has(item.file.type)) {
+          throw new Error("Chỉ hỗ trợ PNG, JPG hoặc WEBP.");
+        }
+        if (item.file.size > MAX_FILE_SIZE) {
+          throw new Error("Ảnh vượt quá giới hạn 20 MB.");
+        }
 
-      const output = document.createElement("canvas");
-      output.width = foreground.width;
-      output.height = foreground.height;
-      const outputContext = output.getContext("2d");
-      if (!outputContext) throw new Error("Trình duyệt không thể xuất ảnh này.");
-      outputContext.fillStyle = "#ffffff";
-      outputContext.fillRect(0, 0, foreground.width, foreground.height);
-      outputContext.drawImage(cutout, 0, 0);
-
-      setResult({
-        src: output.toDataURL("image/png"),
-        name: file.name.replace(/\.[^.]+$/, "") + "-nen-trang.png",
-        width: foreground.width,
-        height: foreground.height,
-      });
-      setProgress(null);
-    } catch (processingError) {
-      if (job === jobRef.current) {
-        setProgress(null);
-        setError(
-          processingError instanceof Error
-            ? `Không thể tách nền: ${processingError.message}`
-            : "Không thể tách nền ảnh. Vui lòng thử lại.",
+        const result = await createWhiteBackgroundResult(
+          item.file,
+          setProgress,
         );
+        resultUrlsRef.current.push(result.src);
+        updateItem(item.id, { status: "done", result });
+      } catch (processingError) {
+        updateItem(item.id, {
+          status: "error",
+          error:
+            processingError instanceof Error
+              ? processingError.message
+              : "Không thể xử lý ảnh này.",
+        });
       }
-    } finally {
-      if (job === jobRef.current) setBusy(false);
+
+      await nextFrame();
     }
+
+    setProgress(null);
+    setCurrentName("");
+    setBusy(false);
   };
 
   const onFile = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) void processFile(file);
+    void processFiles(Array.from(event.target.files ?? []));
   };
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragging(false);
-    const file = event.dataTransfer.files[0];
-    if (file) void processFile(file);
+    void processFiles(Array.from(event.dataTransfer.files));
   };
 
   const openPickerFromKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Enter" || event.key === " ") {
+    if (!busy && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
       inputRef.current?.click();
     }
   };
 
+  const finishedCount = items.filter(
+    (item) => item.status === "done" || item.status === "error",
+  ).length;
+  const successfulCount = items.filter((item) => item.status === "done").length;
+  const currentFraction =
+    busy && progress?.status === "loading"
+      ? progress.percent / 200
+      : busy
+        ? 0.72
+        : 0;
+  const overallPercent =
+    items.length > 0
+      ? Math.min(
+          100,
+          ((finishedCount + currentFraction) / items.length) * 100,
+        )
+      : 0;
+
   const busyText =
-    progress?.status === "processing"
-      ? "Đang tách người khỏi nền…"
-      : progress?.status === "loading"
-        ? `Đang tải mô hình AI… ${progress.percent}%`
-        : "Đang xử lý ảnh…";
+    progress?.status === "loading"
+      ? `Đang tải mô hình AI… ${progress.percent}%`
+      : `Đang xử lý ảnh ${currentIndex}/${items.length}`;
 
   return (
     <main className="shell">
@@ -141,20 +310,25 @@ export default function Home() {
           <em>Thay bằng nền trắng.</em>
         </h1>
         <p className="sub">
-          AI tự động giữ lại người và loại bỏ toàn bộ nền phía sau, dù nền sáng,
-          tối hay có nhiều chi tiết. Ảnh xuất luôn có nền trắng liền mạch.
+          Tải nhiều ảnh cùng lúc. AI giữ lại người và loại bỏ toàn bộ nền phía
+          sau, dù nền sáng, tối hay có nhiều chi tiết.
         </p>
       </section>
 
       <section className="workspace">
         <div
-          className={`drop-card${dragging ? " is-dragging" : ""}`}
+          className={`drop-card${dragging ? " is-dragging" : ""}${busy ? " is-busy" : ""}`}
           role="button"
-          tabIndex={0}
-          aria-label="Chọn ảnh cần tách người và thay nền trắng"
-          onClick={() => inputRef.current?.click()}
+          tabIndex={busy ? -1 : 0}
+          aria-disabled={busy}
+          aria-label="Chọn nhiều ảnh cần tách người và thay nền trắng"
+          onClick={() => {
+            if (!busy) inputRef.current?.click();
+          }}
           onKeyDown={openPickerFromKeyboard}
-          onDragEnter={() => setDragging(true)}
+          onDragEnter={() => {
+            if (!busy) setDragging(true);
+          }}
           onDragLeave={() => setDragging(false)}
           onDragOver={(event) => event.preventDefault()}
           onDrop={onDrop}
@@ -162,6 +336,8 @@ export default function Home() {
           <input
             ref={inputRef}
             hidden
+            multiple
+            disabled={busy}
             type="file"
             accept="image/png,image/jpeg,image/webp"
             onClick={(event) => {
@@ -172,77 +348,133 @@ export default function Home() {
           <div className="upload-icon" aria-hidden="true">
             ↑
           </div>
-          <h2>{busy ? busyText : "Kéo thả ảnh vào đây"}</h2>
-          {busy && progress?.status === "loading" ? (
-            <div className="model-progress" aria-label="Tiến trình tải mô hình">
-              <span style={{ width: `${progress.percent}%` }} />
-            </div>
+          <h2>{busy ? busyText : "Kéo thả nhiều ảnh vào đây"}</h2>
+          {busy ? (
+            <>
+              <p className="current-file" title={currentName}>
+                {currentName}
+              </p>
+              <div className="model-progress" aria-label="Tiến trình xử lý">
+                <span style={{ width: `${overallPercent}%` }} />
+              </div>
+            </>
           ) : (
             <p>
-              hoặc <span className="choose-file">chọn tệp từ máy</span>
+              hoặc <span className="choose-file">chọn nhiều tệp từ máy</span>
             </p>
           )}
           <small>
             {busy
-              ? "Giữ trang mở trong lúc xử lý"
-              : "PNG, JPG hoặc WEBP · tối đa 20 MB"}
+              ? "Kết quả hiện ngay khi từng ảnh hoàn tất"
+              : `PNG, JPG hoặc WEBP · tối đa ${MAX_BATCH_SIZE} ảnh/lần`}
           </small>
         </div>
 
         <div className="tips">
           <div>
             <b>01</b>
-            <span>Chọn ảnh chân dung có bất kỳ nền sáng, tối hoặc phức tạp.</span>
+            <span>Chọn tối đa 20 ảnh chân dung trong một lần.</span>
           </div>
           <div>
             <b>02</b>
-            <span>AI tách người, tóc, áo và cánh tay khỏi toàn bộ cảnh phía sau.</span>
+            <span>Ảnh được xử lý tuần tự để máy chạy ổn định và ít tốn RAM.</span>
           </div>
           <div>
             <b>03</b>
-            <span>Ảnh PNG được ghép nền trắng và giữ nguyên độ phân giải.</span>
+            <span>Giữ nguyên tên, định dạng và ảnh nền trắng đã có sẵn.</span>
           </div>
         </div>
       </section>
 
       <p className="model-note">
-        Lần xử lý đầu tiên có thể lâu hơn vài giây để tải mô hình AI. Những lần
-        sau mô hình được dùng lại ngay trên thiết bị.
+        Lần đầu có thể lâu hơn vài giây để tải mô hình AI. Ảnh đã nền trắng được
+        bỏ qua AI để giữ nguyên màu ở viền và đáy.
       </p>
 
-      {error && (
-        <p className="error" role="alert">
-          {error}
+      {notice && (
+        <p className="notice" role="status">
+          {notice}
         </p>
       )}
 
-      {result && (
+      {items.length > 0 && (
         <section className="result" aria-live="polite">
           <div className="result-head">
             <div>
-              <div className="eyebrow">ĐÃ TÁCH NỀN VÀ GHÉP TRẮNG</div>
-              <h2>Xem trước kết quả</h2>
-              <p className="result-meta">
-                {result.width} × {result.height} px · PNG nền trắng
-              </p>
+              <div className="eyebrow">KẾT QUẢ XỬ LÝ HÀNG LOẠT</div>
+              <h2>
+                {busy
+                  ? `Đã xong ${finishedCount}/${items.length} ảnh`
+                  : `${successfulCount}/${items.length} ảnh hoàn tất`}
+              </h2>
             </div>
-            <a className="download" href={result.src} download={result.name}>
-              Tải ảnh nền trắng ↓
-            </a>
+            <span className="batch-status">
+              {busy ? "Đang xử lý tuần tự…" : "Sẵn sàng tải xuống"}
+            </span>
           </div>
 
-          <div className="preview-frame">
-            <div className="preview">
-              {/* Ảnh là data URL tạo tại chỗ nên không thể đi qua bộ tối ưu ảnh. */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={result.src} alt="Chủ thể đã được tách và ghép nền trắng" />
-            </div>
+          <div className="overall-progress" aria-hidden="true">
+            <span style={{ width: `${overallPercent}%` }} />
+          </div>
+
+          <div className="result-grid">
+            {items.map((item) => (
+              <article
+                className={`result-card is-${item.status}`}
+                key={item.id}
+              >
+                <div className="result-card-preview">
+                  {item.result ? (
+                    <>
+                      {/* Ảnh là object URL tạo tại chỗ. */}
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={item.result.src}
+                        alt={`${item.file.name} đã ghép nền trắng`}
+                      />
+                    </>
+                  ) : (
+                    <div className="item-state">
+                      {item.status === "processing" && (
+                        <span className="spinner" aria-hidden="true" />
+                      )}
+                      {item.status === "queued" && "Đang chờ"}
+                      {item.status === "processing" && "Đang xử lý"}
+                      {item.status === "error" && "Không thể xử lý"}
+                    </div>
+                  )}
+                </div>
+
+                <div className="result-card-info">
+                  <h3 title={item.file.name}>{item.file.name}</h3>
+                  {item.result && (
+                    <>
+                      <p>
+                        {item.result.width} × {item.result.height} px ·{" "}
+                        {item.result.format}
+                      </p>
+                      {item.result.preserved && (
+                        <small>Đã giữ nguyên ảnh nền trắng sẵn có</small>
+                      )}
+                      <a
+                        className="download"
+                        href={item.result.src}
+                        download={item.result.name}
+                      >
+                        Tải xuống
+                      </a>
+                    </>
+                  )}
+                  {item.error && <p className="item-error">{item.error}</p>}
+                </div>
+              </article>
+            ))}
           </div>
         </section>
       )}
 
       <footer>
-        Nền Trắng <span>•</span> Tách nền trên thiết bị · không watermark
+        Nền Trắng <span>•</span> Xử lý hàng loạt trên thiết bị · không watermark
       </footer>
     </main>
   );

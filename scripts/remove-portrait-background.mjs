@@ -1,5 +1,7 @@
 import { resolve } from "node:path";
 import { pipeline } from "@huggingface/transformers";
+import sharp from "sharp";
+import { analyzeExteriorBackground } from "../app/white-background-detection.ts";
 
 const [, , inputArgument, outputArgument] = process.argv;
 
@@ -11,32 +13,57 @@ if (!inputArgument || !outputArgument) {
 } else {
   const inputPath = resolve(inputArgument);
   const outputPath = resolve(outputArgument);
-  let lastPercent = -1;
-  const segmenter = await pipeline("background-removal", "Xenova/modnet", {
-    dtype: "fp32",
-    progress_callback: (progress) => {
-      if (
-        progress.status === "progress" &&
-        progress.file?.toLowerCase().includes(".onnx")
-      ) {
-        const percent = Math.round(progress.progress ?? 0);
-        if (percent !== lastPercent) {
-          lastPercent = percent;
-          process.stdout.write(`\rĐang tải mô hình: ${percent}%`);
-        }
-      }
-    },
-  });
-
-  const foreground = await segmenter(inputPath);
-  await foreground
-    .toSharp()
-    .flatten({ background: "#ffffff" })
-    .png()
-    .toFile(outputPath);
-
-  console.log(
-    `\nĐã tạo ảnh nền trắng ${foreground.width}×${foreground.height}: ${outputPath}`,
+  const source = await sharp(inputPath)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const sourcePixels = new Uint8ClampedArray(
+    source.data.buffer,
+    source.data.byteOffset,
+    source.data.byteLength,
   );
-  await segmenter.dispose();
+  const exterior = analyzeExteriorBackground(
+    sourcePixels,
+    source.info.width,
+    source.info.height,
+  );
+
+  if (exterior.isWhiteBackground) {
+    await sharp(inputPath)
+      .flatten({ background: "#ffffff" })
+      .png()
+      .toFile(outputPath);
+    console.log(
+      `Ảnh đã có nền trắng, giữ nguyên ${source.info.width}×${source.info.height}: ${outputPath}`,
+    );
+  } else {
+    let lastPercent = -1;
+    const segmenter = await pipeline("background-removal", "Xenova/modnet", {
+      dtype: "fp32",
+      progress_callback: (progress) => {
+        if (
+          progress.status === "progress" &&
+          progress.file?.toLowerCase().includes(".onnx")
+        ) {
+          const percent = Math.round(progress.progress ?? 0);
+          if (percent !== lastPercent) {
+            lastPercent = percent;
+            process.stdout.write(`\rĐang tải mô hình: ${percent}%`);
+          }
+        }
+      },
+    });
+
+    const foreground = await segmenter(inputPath);
+    await foreground
+      .toSharp()
+      .flatten({ background: "#ffffff" })
+      .png()
+      .toFile(outputPath);
+
+    console.log(
+      `\nĐã tạo ảnh nền trắng ${foreground.width}×${foreground.height}: ${outputPath}`,
+    );
+    await segmenter.dispose();
+  }
 }
