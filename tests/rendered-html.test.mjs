@@ -23,18 +23,18 @@ async function render() {
   );
 }
 
-test("renders the white-background workflow in Vietnamese", async () => {
+test("renders the AI portrait-background workflow in Vietnamese", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="vi">/i);
-  assert.match(html, /Nền Trắng — Làm trắng nền, giữ nguyên chủ thể/);
-  assert.match(html, /NỀN TRẮNG TINH/);
-  assert.match(html, /Không xóa nền, không làm trong suốt/);
-  assert.match(html, /giữ nguyên kích thước ảnh gốc/i);
-  assert.doesNotMatch(html, /Tải PNG xuống để giữ nền trong suốt/i);
+  assert.match(html, /Nền Trắng — Tách người và thay nền trắng/);
+  assert.match(html, /TÁCH CHỦ THỂ/);
+  assert.match(html, /dù nền sáng, tối hay có nhiều chi tiết/i);
+  assert.match(html, /AI tách người, tóc, áo và cánh tay/i);
+  assert.doesNotMatch(html, /Chỉ vùng nền sáng nối với mép ảnh/i);
 });
 
 test("uses a solid white result preview instead of a transparency grid", async () => {

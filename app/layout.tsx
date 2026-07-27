@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Nền Trắng — Làm trắng nền, giữ nguyên chủ thể",
+  title: "Nền Trắng — Tách người và thay nền trắng",
   description:
-    "Công cụ chuẩn hóa nền ảnh thành trắng tinh, miễn phí và xử lý riêng tư ngay trên thiết bị.",
+    "Công cụ AI tách người khỏi mọi phông nền và ghép nền trắng ngay trên thiết bị.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

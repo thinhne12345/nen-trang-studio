@@ -7,7 +7,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { normalizeExteriorWhiteBackground } from "./white-background";
+import {
+  ModelProgress,
+  removePortraitBackground,
+} from "./portrait-background";
 
 type Result = {
   src: string;
@@ -17,20 +20,18 @@ type Result = {
 };
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
-const MAX_PIXEL_COUNT = 40_000_000;
 const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const jobRef = useRef(0);
-  const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [result, setResult] = useState<Result | null>(null);
-  const [sensitivity, setSensitivity] = useState(36);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
+  const [progress, setProgress] = useState<ModelProgress | null>(null);
 
-  const processFile = (file: File, nextSensitivity = sensitivity) => {
+  const processFile = async (file: File) => {
     setError("");
 
     if (!ACCEPTED_TYPES.has(file.type)) {
@@ -43,94 +44,67 @@ export default function Home() {
     }
 
     const job = ++jobRef.current;
-    const image = new Image();
-    const objectUrl = URL.createObjectURL(file);
     setBusy(true);
     setResult(null);
+    setProgress({ percent: 0, status: "loading" });
 
-    image.onload = () => {
-      try {
-        const width = image.naturalWidth;
-        const height = image.naturalHeight;
-        if (!width || !height || width * height > MAX_PIXEL_COUNT) {
-          throw new Error(
-            "Ảnh quá lớn để xử lý an toàn. Kích thước tối đa là 40 triệu điểm ảnh.",
-          );
-        }
+    try {
+      const foreground = await removePortraitBackground(file, (nextProgress) => {
+        if (job === jobRef.current) setProgress(nextProgress);
+      });
+      if (job !== jobRef.current) return;
 
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const context = canvas.getContext("2d", { willReadFrequently: true });
-        if (!context) throw new Error("Trình duyệt không thể xử lý ảnh này.");
+      const cutout = document.createElement("canvas");
+      cutout.width = foreground.width;
+      cutout.height = foreground.height;
+      const cutoutContext = cutout.getContext("2d");
+      if (!cutoutContext) throw new Error("Trình duyệt không thể xử lý ảnh này.");
+      cutoutContext.putImageData(
+        new ImageData(foreground.data, foreground.width, foreground.height),
+        0,
+        0,
+      );
 
-        context.drawImage(image, 0, 0);
-        const imageData = context.getImageData(0, 0, width, height);
-        normalizeExteriorWhiteBackground(
-          imageData.data,
-          width,
-          height,
-          nextSensitivity,
-        );
-        context.putImageData(imageData, 0, 0);
+      const output = document.createElement("canvas");
+      output.width = foreground.width;
+      output.height = foreground.height;
+      const outputContext = output.getContext("2d");
+      if (!outputContext) throw new Error("Trình duyệt không thể xuất ảnh này.");
+      outputContext.fillStyle = "#ffffff";
+      outputContext.fillRect(0, 0, foreground.width, foreground.height);
+      outputContext.drawImage(cutout, 0, 0);
 
-        const output = document.createElement("canvas");
-        output.width = width;
-        output.height = height;
-        const outputContext = output.getContext("2d");
-        if (!outputContext) throw new Error("Trình duyệt không thể xuất ảnh này.");
-
-        outputContext.fillStyle = "#ffffff";
-        outputContext.fillRect(0, 0, width, height);
-        outputContext.drawImage(canvas, 0, 0);
-
-        if (job === jobRef.current) {
-          setResult({
-            src: output.toDataURL("image/png"),
-            name: file.name.replace(/\.[^.]+$/, "") + "-nen-trang.png",
-            width,
-            height,
-          });
-        }
-      } catch (processingError) {
-        if (job === jobRef.current) {
-          setError(
-            processingError instanceof Error
-              ? processingError.message
-              : "Không thể xử lý ảnh. Vui lòng thử lại.",
-          );
-        }
-      } finally {
-        URL.revokeObjectURL(objectUrl);
-        if (job === jobRef.current) setBusy(false);
-      }
-    };
-
-    image.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
+      setResult({
+        src: output.toDataURL("image/png"),
+        name: file.name.replace(/\.[^.]+$/, "") + "-nen-trang.png",
+        width: foreground.width,
+        height: foreground.height,
+      });
+      setProgress(null);
+    } catch (processingError) {
       if (job === jobRef.current) {
-        setBusy(false);
-        setError("Không thể đọc tệp ảnh này. Vui lòng chọn ảnh khác.");
+        setProgress(null);
+        setError(
+          processingError instanceof Error
+            ? `Không thể tách nền: ${processingError.message}`
+            : "Không thể tách nền ảnh. Vui lòng thử lại.",
+        );
       }
-    };
-    image.src = objectUrl;
-  };
-
-  const selectFile = (file: File) => {
-    setSourceFile(file);
-    processFile(file);
+    } finally {
+      if (job === jobRef.current) setBusy(false);
+    }
   };
 
   const onFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) selectFile(file);
+    if (file) void processFile(file);
   };
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragging(false);
     const file = event.dataTransfer.files[0];
-    if (file) selectFile(file);
+    if (file) void processFile(file);
   };
 
   const openPickerFromKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -140,9 +114,12 @@ export default function Home() {
     }
   };
 
-  const reprocess = () => {
-    if (sourceFile) processFile(sourceFile, sensitivity);
-  };
+  const busyText =
+    progress?.status === "processing"
+      ? "Đang tách người khỏi nền…"
+      : progress?.status === "loading"
+        ? `Đang tải mô hình AI… ${progress.percent}%`
+        : "Đang xử lý ảnh…";
 
   return (
     <main className="shell">
@@ -157,15 +134,15 @@ export default function Home() {
       </nav>
 
       <section className="hero">
-        <div className="eyebrow">NỀN TRẮNG TINH • GIỮ NGUYÊN CHỦ THỂ</div>
+        <div className="eyebrow">TÁCH CHỦ THỂ • GHÉP NỀN TRẮNG</div>
         <h1>
-          Làm trắng nền.
+          Xóa nền cũ.
           <br />
-          <em>Giữ trọn chủ thể.</em>
+          <em>Thay bằng nền trắng.</em>
         </h1>
         <p className="sub">
-          Chuẩn hóa phần nền sáng xung quanh thành trắng tinh như ảnh mẫu.
-          Không xóa nền, không làm trong suốt và không đổi kích thước ảnh.
+          AI tự động giữ lại người và loại bỏ toàn bộ nền phía sau, dù nền sáng,
+          tối hay có nhiều chi tiết. Ảnh xuất luôn có nền trắng liền mạch.
         </p>
       </section>
 
@@ -174,7 +151,7 @@ export default function Home() {
           className={`drop-card${dragging ? " is-dragging" : ""}`}
           role="button"
           tabIndex={0}
-          aria-label="Chọn ảnh cần làm nền trắng"
+          aria-label="Chọn ảnh cần tách người và thay nền trắng"
           onClick={() => inputRef.current?.click()}
           onKeyDown={openPickerFromKeyboard}
           onDragEnter={() => setDragging(true)}
@@ -195,28 +172,43 @@ export default function Home() {
           <div className="upload-icon" aria-hidden="true">
             ↑
           </div>
-          <h2>{busy ? "Đang làm trắng nền…" : "Kéo thả ảnh vào đây"}</h2>
-          <p>
-            hoặc <span className="choose-file">chọn tệp từ máy</span>
-          </p>
-          <small>PNG, JPG hoặc WEBP · tối đa 20 MB</small>
+          <h2>{busy ? busyText : "Kéo thả ảnh vào đây"}</h2>
+          {busy && progress?.status === "loading" ? (
+            <div className="model-progress" aria-label="Tiến trình tải mô hình">
+              <span style={{ width: `${progress.percent}%` }} />
+            </div>
+          ) : (
+            <p>
+              hoặc <span className="choose-file">chọn tệp từ máy</span>
+            </p>
+          )}
+          <small>
+            {busy
+              ? "Giữ trang mở trong lúc xử lý"
+              : "PNG, JPG hoặc WEBP · tối đa 20 MB"}
+          </small>
         </div>
 
         <div className="tips">
           <div>
             <b>01</b>
-            <span>Chọn ảnh chân dung, logo hoặc sản phẩm có nền trắng hay gần trắng.</span>
+            <span>Chọn ảnh chân dung có bất kỳ nền sáng, tối hoặc phức tạp.</span>
           </div>
           <div>
             <b>02</b>
-            <span>Chỉ vùng nền sáng nối với mép ảnh được chuẩn hóa thành trắng tinh.</span>
+            <span>AI tách người, tóc, áo và cánh tay khỏi toàn bộ cảnh phía sau.</span>
           </div>
           <div>
             <b>03</b>
-            <span>Tải PNG nền trắng liền mạch, giữ nguyên kích thước ảnh gốc.</span>
+            <span>Ảnh PNG được ghép nền trắng và giữ nguyên độ phân giải.</span>
           </div>
         </div>
       </section>
+
+      <p className="model-note">
+        Lần xử lý đầu tiên có thể lâu hơn vài giây để tải mô hình AI. Những lần
+        sau mô hình được dùng lại ngay trên thiết bị.
+      </p>
 
       {error && (
         <p className="error" role="alert">
@@ -228,7 +220,7 @@ export default function Home() {
         <section className="result" aria-live="polite">
           <div className="result-head">
             <div>
-              <div className="eyebrow">NỀN TRẮNG ĐÃ SẴN SÀNG</div>
+              <div className="eyebrow">ĐÃ TÁCH NỀN VÀ GHÉP TRẮNG</div>
               <h2>Xem trước kết quả</h2>
               <p className="result-meta">
                 {result.width} × {result.height} px · PNG nền trắng
@@ -243,41 +235,14 @@ export default function Home() {
             <div className="preview">
               {/* Ảnh là data URL tạo tại chỗ nên không thể đi qua bộ tối ưu ảnh. */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={result.src} alt="Ảnh có nền trắng đã hoàn tất" />
-            </div>
-          </div>
-
-          <div className="sensitivity">
-            <label htmlFor="sensitivity">
-              <span>
-                <b>Mức làm trắng nền</b>
-                <small>
-                  Tăng nếu nền còn hơi xám, giảm nếu viền chủ thể quá sáng.
-                </small>
-              </span>
-              <output>{sensitivity}</output>
-            </label>
-            <div className="range-row">
-              <input
-                id="sensitivity"
-                type="range"
-                min="10"
-                max="70"
-                value={sensitivity}
-                onChange={(event) => setSensitivity(Number(event.target.value))}
-                onPointerUp={reprocess}
-                onKeyUp={reprocess}
-              />
-              <button type="button" onClick={reprocess}>
-                Áp dụng lại
-              </button>
+              <img src={result.src} alt="Chủ thể đã được tách và ghép nền trắng" />
             </div>
           </div>
         </section>
       )}
 
       <footer>
-        Nền Trắng <span>•</span> Miễn phí · riêng tư · không watermark
+        Nền Trắng <span>•</span> Tách nền trên thiết bị · không watermark
       </footer>
     </main>
   );

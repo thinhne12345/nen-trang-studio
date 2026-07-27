@@ -163,6 +163,31 @@ nav {
   font-size: 11px;
 }
 
+.model-progress {
+  width: min(320px, 72%);
+  height: 7px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #cfe0d6;
+}
+
+.model-progress span {
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: var(--green);
+  transition: width 0.2s ease;
+}
+
+.model-note {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .tips {
   padding: 28px;
   border: 1px solid var(--line);
@@ -263,69 +288,6 @@ nav {
   object-fit: contain;
 }
 
-.sensitivity {
-  margin-top: 16px;
-  padding: 18px 20px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: #fff;
-}
-
-.sensitivity label {
-  display: flex;
-  justify-content: space-between;
-  align-items: start;
-  gap: 16px;
-}
-
-.sensitivity label span {
-  display: grid;
-  gap: 4px;
-}
-
-.sensitivity label b {
-  font-size: 13px;
-}
-
-.sensitivity label small {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.sensitivity output {
-  min-width: 34px;
-  padding: 4px 7px;
-  border-radius: 7px;
-  background: var(--mint);
-  color: var(--green);
-  font-size: 12px;
-  font-weight: 700;
-  text-align: center;
-}
-
-.range-row {
-  margin-top: 13px;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-input[type="range"] {
-  flex: 1;
-  accent-color: var(--green);
-}
-
-.range-row button {
-  padding: 9px 12px;
-  border: 1px solid #b7cbbf;
-  border-radius: 9px;
-  background: #f7fbf8;
-  color: var(--green);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
 footer {
   margin-top: 64px;
   color: #82938a;
@@ -377,14 +339,11 @@ footer span {
     padding: 14px;
   }
 
-  .range-row {
-    align-items: stretch;
-    flex-direction: column;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .drop-card {
+  .drop-card,
+  .model-progress span {
     transition: none;
   }
 }
