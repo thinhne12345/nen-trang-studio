@@ -58,3 +58,34 @@ test("preserves a soft edge connected to the dominant subject", () => {
   assert.equal(result.removedPixelCount, 0);
   assert.equal(data[pixel(width, 4, 4) + 3], 6);
 });
+
+test("removes multiple detached text and logo shapes around the portrait", () => {
+  const width = 40;
+  const height = 30;
+  const data = new Uint8ClampedArray(width * height * 4);
+
+  // Dominant portrait.
+  for (let y = 4; y < height; y++) {
+    for (let x = 14; x <= 27; x++) {
+      data[pixel(width, x, y) + 3] = 255;
+    }
+  }
+
+  // Detached letter T.
+  for (let x = 2; x <= 8; x++) data[pixel(width, x, 5) + 3] = 230;
+  for (let y = 5; y <= 11; y++) data[pixel(width, 5, y) + 3] = 230;
+
+  // Detached logo block on the other side.
+  for (let y = 16; y <= 20; y++) {
+    for (let x = 32; x <= 36; x++) {
+      data[pixel(width, x, y) + 3] = 190;
+    }
+  }
+
+  const result = removeDetachedAlphaIslands(data, width, height);
+
+  assert.equal(result.componentCount, 3);
+  assert.equal(data[pixel(width, 5, 8) + 3], 0);
+  assert.equal(data[pixel(width, 34, 18) + 3], 0);
+  assert.equal(data[pixel(width, 20, 18) + 3], 255);
+});
