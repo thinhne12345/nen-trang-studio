@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { pipeline } from "@huggingface/transformers";
 import sharp from "sharp";
+import { removeDetachedAlphaIslands } from "../app/foreground-cleanup.ts";
 import { analyzeExteriorBackground } from "../app/white-background-detection.ts";
 
 const [, , inputArgument, outputArgument] = process.argv;
@@ -55,14 +56,25 @@ if (!inputArgument || !outputArgument) {
     });
 
     const foreground = await segmenter(inputPath);
-    await foreground
-      .toSharp()
+    const foregroundPixels = new Uint8ClampedArray(foreground.data);
+    const cleanup = removeDetachedAlphaIslands(
+      foregroundPixels,
+      foreground.width,
+      foreground.height,
+    );
+    await sharp(foregroundPixels, {
+      raw: {
+        width: foreground.width,
+        height: foreground.height,
+        channels: 4,
+      },
+    })
       .flatten({ background: "#ffffff" })
       .png()
       .toFile(outputPath);
 
     console.log(
-      `\nĐã tạo ảnh nền trắng ${foreground.width}×${foreground.height}: ${outputPath}`,
+      `\nĐã tạo ảnh nền trắng ${foreground.width}×${foreground.height}; đã xóa ${cleanup.removedPixelCount} pixel nền rời: ${outputPath}`,
     );
     await segmenter.dispose();
   }

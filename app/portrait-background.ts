@@ -1,3 +1,5 @@
+import { removeDetachedAlphaIslands } from "./foreground-cleanup";
+
 export type ModelProgress = {
   percent: number;
   status: "loading" | "ready" | "processing";
@@ -82,8 +84,11 @@ export async function removePortraitBackground(
     throw new Error("Mô hình không tạo được ảnh chủ thể hợp lệ.");
   }
 
+  const data = new Uint8ClampedArray(foreground.data);
+  removeDetachedAlphaIslands(data, foreground.width, foreground.height);
+
   return {
-    data: new Uint8ClampedArray(foreground.data),
+    data,
     width: foreground.width,
     height: foreground.height,
   };

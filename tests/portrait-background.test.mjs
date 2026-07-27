@@ -12,6 +12,7 @@ test("uses portrait matting before compositing onto solid white", async () => {
   assert.match(processor, /pipeline\(\s*"background-removal"/);
   assert.match(processor, /"Xenova\/modnet"/);
   assert.match(processor, /dtype:\s*"fp32"/);
+  assert.match(processor, /removeDetachedAlphaIslands/);
   assert.match(page, /fillStyle = "#ffffff"/);
   assert.match(page, /outputContext\.drawImage\(cutout/);
   assert.match(page, /multiple/);
