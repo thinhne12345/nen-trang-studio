@@ -318,6 +318,21 @@ export default function Home() {
     }
   };
 
+  const resetWorkspace = () => {
+    if (busy || zipBusy) return;
+
+    for (const url of resultUrlsRef.current) URL.revokeObjectURL(url);
+    resultUrlsRef.current = [];
+    if (inputRef.current) inputRef.current.value = "";
+    setItems([]);
+    setProgress(null);
+    setCurrentIndex(0);
+    setCurrentName("");
+    setNotice("");
+    setDragging(false);
+    setZipBusy(false);
+  };
+
   const onFile = (event: ChangeEvent<HTMLInputElement>) => {
     void processFiles(Array.from(event.target.files ?? []));
   };
@@ -480,17 +495,29 @@ export default function Home() {
               <span className="batch-status">
                 {busy ? "Đang xử lý tuần tự…" : "Sẵn sàng tải xuống"}
               </span>
-              {!busy && successfulCount > 0 && (
-                <button
-                  className="download download-all"
-                  type="button"
-                  disabled={zipBusy}
-                  onClick={() => void downloadAllAsZip()}
-                >
-                  {zipBusy
-                    ? "Đang tạo ZIP…"
-                    : `Tải tất cả ${successfulCount} ảnh (.zip)`}
-                </button>
+              {!busy && (
+                <div className="result-action-buttons">
+                  {successfulCount > 0 && (
+                    <button
+                      className="download download-all"
+                      type="button"
+                      disabled={zipBusy}
+                      onClick={() => void downloadAllAsZip()}
+                    >
+                      {zipBusy
+                        ? "Đang tạo ZIP…"
+                        : `Tải tất cả ${successfulCount} ảnh (.zip)`}
+                    </button>
+                  )}
+                  <button
+                    className="reset-button"
+                    type="button"
+                    disabled={zipBusy}
+                    onClick={resetWorkspace}
+                  >
+                    ↻ Làm lại
+                  </button>
+                </div>
               )}
             </div>
           </div>
