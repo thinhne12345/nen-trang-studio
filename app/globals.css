@@ -262,6 +262,13 @@ nav {
   font-size: 12px;
 }
 
+.result-head-actions {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .overall-progress {
   height: 8px;
   margin-top: 18px;
@@ -382,6 +389,17 @@ nav {
   background: #15583c;
 }
 
+.download-all {
+  margin-top: 0;
+  border: 0;
+  cursor: pointer;
+}
+
+.download-all:disabled {
+  cursor: progress;
+  opacity: 0.65;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -443,6 +461,16 @@ footer span {
   .result-head {
     align-items: start;
     flex-direction: column;
+  }
+
+  .result-head-actions {
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .download-all {
+    width: 100%;
+    text-align: center;
   }
 
   .result-grid {

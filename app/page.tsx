@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { downloadZip } from "client-zip";
 import {
   ModelProgress,
   removePortraitBackground,
@@ -21,6 +22,7 @@ type Result = {
   height: number;
   format: string;
   preserved: boolean;
+  blob: Blob;
 };
 
 type QueueItem = {
@@ -105,6 +107,29 @@ const canvasToBlob = (
 const nextFrame = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
+const makeUniqueArchiveName = (
+  originalName: string,
+  usedNames: Map<string, number>,
+  fallbackIndex: number,
+) => {
+  const safeName =
+    originalName
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+      .replace(/^\.+/, "")
+      .trim() || `anh-${fallbackIndex + 1}.png`;
+  const key = safeName.toLocaleLowerCase("vi");
+  const duplicateIndex = usedNames.get(key) ?? 0;
+  usedNames.set(key, duplicateIndex + 1);
+
+  if (duplicateIndex === 0) return safeName;
+
+  const extensionIndex = safeName.lastIndexOf(".");
+  const hasExtension = extensionIndex > 0;
+  const stem = hasExtension ? safeName.slice(0, extensionIndex) : safeName;
+  const extension = hasExtension ? safeName.slice(extensionIndex) : "";
+  return `${stem}-${duplicateIndex + 1}${extension}`;
+};
+
 async function createWhiteBackgroundResult(
   file: File,
   onProgress: (progress: ModelProgress) => void,
@@ -162,6 +187,7 @@ async function createWhiteBackgroundResult(
     height: output.height,
     format: FORMAT_LABELS[file.type] ?? "Ảnh",
     preserved: exterior.isWhiteBackground,
+    blob,
   };
 }
 
@@ -175,6 +201,7 @@ export default function Home() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [currentName, setCurrentName] = useState("");
   const [notice, setNotice] = useState("");
+  const [zipBusy, setZipBusy] = useState(false);
 
   useEffect(
     () => () => {
@@ -209,6 +236,7 @@ export default function Home() {
     }));
     setItems(queue);
     setBusy(true);
+    setZipBusy(false);
 
     for (let index = 0; index < queue.length; index++) {
       const item = queue[index];
@@ -248,6 +276,46 @@ export default function Home() {
     setProgress(null);
     setCurrentName("");
     setBusy(false);
+  };
+
+  const downloadAllAsZip = async () => {
+    const completed = items.filter(
+      (item): item is QueueItem & { result: Result } =>
+        item.status === "done" && Boolean(item.result),
+    );
+    if (zipBusy || completed.length === 0) return;
+
+    setZipBusy(true);
+    setNotice(`Đang đóng gói ${completed.length} ảnh vào file ZIP…`);
+
+    try {
+      const usedNames = new Map<string, number>();
+      const archive = await downloadZip(
+        completed.map((item, index) => ({
+          name: makeUniqueArchiveName(item.result.name, usedNames, index),
+          input: item.result.blob,
+          lastModified: new Date(),
+        })),
+      ).blob();
+      const archiveUrl = URL.createObjectURL(archive);
+      const link = document.createElement("a");
+      link.href = archiveUrl;
+      link.download = `nen-trang-studio-${new Date().toISOString().slice(0, 10)}.zip`;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(archiveUrl), 60_000);
+      setNotice(
+        `Đã đóng gói ${completed.length} ảnh. File ZIP đang được tải xuống.`,
+      );
+    } catch {
+      setNotice(
+        "Không thể tạo file ZIP trên thiết bị này. Bạn vẫn có thể tải từng ảnh bên dưới.",
+      );
+    } finally {
+      setZipBusy(false);
+    }
   };
 
   const onFile = (event: ChangeEvent<HTMLInputElement>) => {
@@ -408,9 +476,23 @@ export default function Home() {
                   : `${successfulCount}/${items.length} ảnh hoàn tất`}
               </h2>
             </div>
-            <span className="batch-status">
-              {busy ? "Đang xử lý tuần tự…" : "Sẵn sàng tải xuống"}
-            </span>
+            <div className="result-head-actions">
+              <span className="batch-status">
+                {busy ? "Đang xử lý tuần tự…" : "Sẵn sàng tải xuống"}
+              </span>
+              {!busy && successfulCount > 0 && (
+                <button
+                  className="download download-all"
+                  type="button"
+                  disabled={zipBusy}
+                  onClick={() => void downloadAllAsZip()}
+                >
+                  {zipBusy
+                    ? "Đang tạo ZIP…"
+                    : `Tải tất cả ${successfulCount} ảnh (.zip)`}
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="overall-progress" aria-hidden="true">
