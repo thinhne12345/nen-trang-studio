@@ -3,8 +3,17 @@ export type ForegroundCleanupResult = {
   removedPixelCount: number;
 };
 
+export type ForegroundEdgeRefinementResult = {
+  removedPixelCount: number;
+  decontaminatedPixelCount: number;
+};
+
 const MAX_GRID_CELLS = 1_000_000;
 const MIN_CONNECTED_ALPHA = 8;
+const ALPHA_BLACK_POINT = 12;
+const LOW_ALPHA_DUST_LIMIT = 56;
+const LOW_ALPHA_SUPPORT = 112;
+const SUPPORT_RADIUS = 2;
 
 /**
  * Remove detached alpha islands produced by the portrait model.
@@ -138,4 +147,121 @@ export function removeDetachedAlphaIslands(
   }
 
   return { componentCount, removedPixelCount };
+}
+
+/**
+ * Tighten and decontaminate the soft portrait edge after the dominant subject
+ * has been selected.
+ *
+ * Very small unsupported mask particles are removed, while low-alpha pixels
+ * connected to a stronger local edge (hair, fingers and clothing) survive.
+ * Neutral light RGB values in the feathered edge are then un-matted from white
+ * to avoid a pale halo when the portrait is placed on a clean white canvas.
+ */
+export function refinePortraitEdges(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+): ForegroundEdgeRefinementResult {
+  if (
+    width <= 0 ||
+    height <= 0 ||
+    pixels.length !== width * height * 4
+  ) {
+    throw new Error("Dữ liệu ảnh chủ thể không hợp lệ.");
+  }
+
+  const pixelCount = width * height;
+  const alpha = new Uint8Array(pixelCount);
+  for (let index = 0; index < pixelCount; index++) {
+    alpha[index] = pixels[index * 4 + 3];
+  }
+
+  let removedPixelCount = 0;
+  let decontaminatedPixelCount = 0;
+
+  for (let y = 0; y < height; y++) {
+    const rowOffset = y * width;
+
+    for (let x = 0; x < width; x++) {
+      const index = rowOffset + x;
+      const originalAlpha = alpha[index];
+      if (originalAlpha === 0) continue;
+      if (originalAlpha >= 250) continue;
+
+      let removePixel = originalAlpha <= ALPHA_BLACK_POINT;
+
+      if (!removePixel && originalAlpha <= LOW_ALPHA_DUST_LIMIT) {
+        const minY = Math.max(0, y - SUPPORT_RADIUS);
+        const maxY = Math.min(height - 1, y + SUPPORT_RADIUS);
+        const minX = Math.max(0, x - SUPPORT_RADIUS);
+        const maxX = Math.min(width - 1, x + SUPPORT_RADIUS);
+        let strongestNeighbour = 0;
+        let visibleNeighbourCount = 0;
+
+        for (let nextY = minY; nextY <= maxY; nextY++) {
+          const nextRowOffset = nextY * width;
+          for (let nextX = minX; nextX <= maxX; nextX++) {
+            const nextIndex = nextRowOffset + nextX;
+            if (nextIndex === index) continue;
+            const nextAlpha = alpha[nextIndex];
+            if (nextAlpha > 0) visibleNeighbourCount++;
+            if (nextAlpha > strongestNeighbour) {
+              strongestNeighbour = nextAlpha;
+            }
+          }
+        }
+
+        // Low-opacity pixels require local support from the portrait edge, so
+        // detached dust disappears without scanning fully opaque interiors.
+        removePixel =
+          visibleNeighbourCount <= 1 ||
+          strongestNeighbour < LOW_ALPHA_SUPPORT;
+      }
+
+      const alphaOffset = index * 4 + 3;
+      if (removePixel) {
+        pixels[alphaOffset] = 0;
+        removedPixelCount++;
+        continue;
+      }
+
+      const refinedAlpha = Math.min(
+        255,
+        Math.round(
+          ((originalAlpha - ALPHA_BLACK_POINT) * 255) /
+            (255 - ALPHA_BLACK_POINT),
+        ),
+      );
+      pixels[alphaOffset] = refinedAlpha;
+
+      const colorOffset = index * 4;
+      const red = pixels[colorOffset];
+      const green = pixels[colorOffset + 1];
+      const blue = pixels[colorOffset + 2];
+      const minimum = Math.min(red, green, blue);
+      const maximum = Math.max(red, green, blue);
+
+      // Only neutral light pixels can be a white-background halo. This leaves
+      // skin tones, saturated clothing and coloured hair edges untouched.
+      if (minimum < 170 || maximum - minimum > 20) continue;
+
+      const coverage = Math.max(originalAlpha / 255, 0.22);
+      pixels[colorOffset] = Math.max(
+        0,
+        Math.min(255, Math.round(255 + (red - 255) / coverage)),
+      );
+      pixels[colorOffset + 1] = Math.max(
+        0,
+        Math.min(255, Math.round(255 + (green - 255) / coverage)),
+      );
+      pixels[colorOffset + 2] = Math.max(
+        0,
+        Math.min(255, Math.round(255 + (blue - 255) / coverage)),
+      );
+      decontaminatedPixelCount++;
+    }
+  }
+
+  return { removedPixelCount, decontaminatedPixelCount };
 }

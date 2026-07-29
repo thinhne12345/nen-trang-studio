@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { removeDetachedAlphaIslands } from "../app/foreground-cleanup.ts";
+import {
+  refinePortraitEdges,
+  removeDetachedAlphaIslands,
+} from "../app/foreground-cleanup.ts";
 
 const pixel = (width, x, y) => (y * width + x) * 4;
 
@@ -88,4 +91,48 @@ test("removes multiple detached text and logo shapes around the portrait", () =>
   assert.equal(data[pixel(width, 5, 8) + 3], 0);
   assert.equal(data[pixel(width, 34, 18) + 3], 0);
   assert.equal(data[pixel(width, 20, 18) + 3], 255);
+});
+
+test("removes unsupported low-alpha dust but keeps a supported hair edge", () => {
+  const width = 12;
+  const height = 10;
+  const data = new Uint8ClampedArray(width * height * 4);
+
+  for (let y = 2; y <= 8; y++) {
+    for (let x = 5; x <= 8; x++) {
+      data[pixel(width, x, y) + 3] = 255;
+    }
+  }
+
+  data[pixel(width, 4, 3) + 3] = 48;
+  data[pixel(width, 1, 1) + 3] = 48;
+
+  const result = refinePortraitEdges(data, width, height);
+
+  assert.equal(result.removedPixelCount, 1);
+  assert.equal(data[pixel(width, 1, 1) + 3], 0);
+  assert.ok(data[pixel(width, 4, 3) + 3] > 0);
+});
+
+test("removes a neutral white fringe from a soft portrait edge", () => {
+  const width = 7;
+  const height = 7;
+  const data = new Uint8ClampedArray(width * height * 4);
+
+  for (let y = 2; y <= 5; y++) {
+    for (let x = 2; x <= 5; x++) {
+      const offset = pixel(width, x, y);
+      data.set([55, 72, 68, 255], offset);
+    }
+  }
+
+  const edgeOffset = pixel(width, 1, 3);
+  data.set([224, 226, 225, 128], edgeOffset);
+
+  const result = refinePortraitEdges(data, width, height);
+
+  assert.equal(result.decontaminatedPixelCount, 1);
+  assert.ok(data[edgeOffset] < 210);
+  assert.ok(data[edgeOffset + 1] < 210);
+  assert.ok(data[edgeOffset + 3] > 100);
 });

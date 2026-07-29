@@ -1,4 +1,7 @@
-import { removeDetachedAlphaIslands } from "./foreground-cleanup";
+import {
+  refinePortraitEdges,
+  removeDetachedAlphaIslands,
+} from "./foreground-cleanup";
 
 export type ModelProgress = {
   percent: number;
@@ -86,6 +89,7 @@ export async function removePortraitBackground(
 
   const data = new Uint8ClampedArray(foreground.data);
   removeDetachedAlphaIslands(data, foreground.width, foreground.height);
+  refinePortraitEdges(data, foreground.width, foreground.height);
 
   return {
     data,

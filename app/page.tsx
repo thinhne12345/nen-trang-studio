@@ -36,6 +36,7 @@ type QueueItem = {
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_PIXEL_COUNT = 30_000_000;
 const MAX_BATCH_SIZE = 20;
+const MAX_WORKSPACE_SIZE = 60;
 const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 const FORMAT_LABELS: Record<string, string> = {
@@ -194,11 +195,13 @@ async function createWhiteBackgroundResult(
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const resultUrlsRef = useRef<string[]>([]);
+  const queueRef = useRef<QueueItem[]>([]);
+  const processingRef = useRef(false);
+  const itemCountRef = useRef(0);
   const [items, setItems] = useState<QueueItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState<ModelProgress | null>(null);
-  const [currentIndex, setCurrentIndex] = useState(0);
   const [currentName, setCurrentName] = useState("");
   const [notice, setNotice] = useState("");
   const [zipBusy, setZipBusy] = useState(false);
@@ -216,31 +219,17 @@ export default function Home() {
     );
   };
 
-  const processFiles = async (selectedFiles: File[]) => {
-    if (busy || selectedFiles.length === 0) return;
+  const processQueue = async () => {
+    if (processingRef.current) return;
 
-    for (const url of resultUrlsRef.current) URL.revokeObjectURL(url);
-    resultUrlsRef.current = [];
-
-    const files = selectedFiles.slice(0, MAX_BATCH_SIZE);
-    setNotice(
-      selectedFiles.length > MAX_BATCH_SIZE
-        ? `Chỉ xử lý ${MAX_BATCH_SIZE} ảnh đầu tiên trong lần này.`
-        : "",
-    );
-
-    const queue: QueueItem[] = files.map((file, index) => ({
-      id: `${Date.now()}-${index}-${file.name}`,
-      file,
-      status: "queued",
-    }));
-    setItems(queue);
+    processingRef.current = true;
     setBusy(true);
     setZipBusy(false);
 
-    for (let index = 0; index < queue.length; index++) {
-      const item = queue[index];
-      setCurrentIndex(index + 1);
+    while (queueRef.current.length > 0) {
+      const item = queueRef.current.shift();
+      if (!item) break;
+
       setCurrentName(item.file.name);
       setProgress({ percent: 100, status: "processing" });
       updateItem(item.id, { status: "processing", error: undefined });
@@ -275,7 +264,59 @@ export default function Home() {
 
     setProgress(null);
     setCurrentName("");
+    processingRef.current = false;
     setBusy(false);
+  };
+
+  const processFiles = (selectedFiles: File[]) => {
+    if (selectedFiles.length === 0) return;
+
+    const availableSlots = Math.max(
+      0,
+      MAX_WORKSPACE_SIZE - itemCountRef.current,
+    );
+    const acceptedCount = Math.min(
+      selectedFiles.length,
+      MAX_BATCH_SIZE,
+      availableSlots,
+    );
+
+    if (acceptedCount === 0) {
+      setNotice(
+        `Khu vực hiện có ${MAX_WORKSPACE_SIZE} ảnh. Hãy tải xuống rồi bấm “Làm lại” để xử lý thêm.`,
+      );
+      return;
+    }
+
+    const files = selectedFiles.slice(0, acceptedCount);
+    const queue: QueueItem[] = files.map((file) => ({
+      id:
+        typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random()}-${file.name}`,
+      file,
+      status: "queued",
+    }));
+    const previousCount = itemCountRef.current;
+
+    itemCountRef.current += queue.length;
+    queueRef.current.push(...queue);
+    setItems((current) => [...current, ...queue]);
+    setZipBusy(false);
+
+    if (acceptedCount < selectedFiles.length) {
+      setNotice(
+        `Đã thêm ${acceptedCount}/${selectedFiles.length} ảnh. Mỗi lần chọn tối đa ${MAX_BATCH_SIZE} ảnh và khu vực giữ tối đa ${MAX_WORKSPACE_SIZE} ảnh.`,
+      );
+    } else if (previousCount > 0) {
+      setNotice(
+        `Đã thêm ${acceptedCount} ảnh mới. ${previousCount} ảnh trước vẫn được giữ nguyên.`,
+      );
+    } else {
+      setNotice("");
+    }
+
+    void processQueue();
   };
 
   const downloadAllAsZip = async () => {
@@ -323,10 +364,12 @@ export default function Home() {
 
     for (const url of resultUrlsRef.current) URL.revokeObjectURL(url);
     resultUrlsRef.current = [];
+    queueRef.current = [];
+    processingRef.current = false;
+    itemCountRef.current = 0;
     if (inputRef.current) inputRef.current.value = "";
     setItems([]);
     setProgress(null);
-    setCurrentIndex(0);
     setCurrentName("");
     setNotice("");
     setDragging(false);
@@ -334,17 +377,17 @@ export default function Home() {
   };
 
   const onFile = (event: ChangeEvent<HTMLInputElement>) => {
-    void processFiles(Array.from(event.target.files ?? []));
+    processFiles(Array.from(event.target.files ?? []));
   };
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragging(false);
-    void processFiles(Array.from(event.dataTransfer.files));
+    processFiles(Array.from(event.dataTransfer.files));
   };
 
   const openPickerFromKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!busy && (event.key === "Enter" || event.key === " ")) {
+    if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       inputRef.current?.click();
     }
@@ -371,7 +414,7 @@ export default function Home() {
   const busyText =
     progress?.status === "loading"
       ? `Đang tải mô hình AI… ${progress.percent}%`
-      : `Đang xử lý ảnh ${currentIndex}/${items.length}`;
+      : `Đang xử lý ảnh ${Math.min(finishedCount + 1, items.length)}/${items.length}`;
 
   return (
     <main className="shell">
@@ -402,16 +445,17 @@ export default function Home() {
         <div
           className={`drop-card${dragging ? " is-dragging" : ""}${busy ? " is-busy" : ""}`}
           role="button"
-          tabIndex={busy ? -1 : 0}
-          aria-disabled={busy}
-          aria-label="Chọn nhiều ảnh cần tách người và thay nền trắng"
+          tabIndex={0}
+          aria-label={
+            items.length > 0
+              ? "Thêm nhiều ảnh vào hàng đợi tách người và thay nền trắng"
+              : "Chọn nhiều ảnh cần tách người và thay nền trắng"
+          }
           onClick={() => {
-            if (!busy) inputRef.current?.click();
+            inputRef.current?.click();
           }}
           onKeyDown={openPickerFromKeyboard}
-          onDragEnter={() => {
-            if (!busy) setDragging(true);
-          }}
+          onDragEnter={() => setDragging(true)}
           onDragLeave={() => setDragging(false)}
           onDragOver={(event) => event.preventDefault()}
           onDrop={onDrop}
@@ -420,7 +464,6 @@ export default function Home() {
             ref={inputRef}
             hidden
             multiple
-            disabled={busy}
             type="file"
             accept="image/png,image/jpeg,image/webp"
             onClick={(event) => {
@@ -431,7 +474,13 @@ export default function Home() {
           <div className="upload-icon" aria-hidden="true">
             ↑
           </div>
-          <h2>{busy ? busyText : "Kéo thả nhiều ảnh vào đây"}</h2>
+          <h2>
+            {busy
+              ? busyText
+              : items.length > 0
+                ? "Kéo thả hoặc chọn thêm ảnh"
+                : "Kéo thả nhiều ảnh vào đây"}
+          </h2>
           {busy ? (
             <>
               <p className="current-file" title={currentName}>
@@ -443,13 +492,16 @@ export default function Home() {
             </>
           ) : (
             <p>
-              hoặc <span className="choose-file">chọn nhiều tệp từ máy</span>
+              hoặc{" "}
+              <span className="choose-file">
+                {items.length > 0 ? "thêm nhiều tệp từ máy" : "chọn nhiều tệp từ máy"}
+              </span>
             </p>
           )}
           <small>
             {busy
-              ? "Kết quả hiện ngay khi từng ảnh hoàn tất"
-              : `PNG, JPG hoặc WEBP · tối đa ${MAX_BATCH_SIZE} ảnh/lần`}
+              ? "Bạn vẫn có thể bấm hoặc kéo thả để thêm ảnh vào hàng đợi"
+              : `PNG, JPG hoặc WEBP · ${MAX_BATCH_SIZE} ảnh/lần · giữ tối đa ${MAX_WORKSPACE_SIZE} ảnh`}
           </small>
         </div>
 
@@ -518,6 +570,15 @@ export default function Home() {
                     ↻ Làm lại
                   </button>
                 </div>
+              )}
+              {busy && (
+                <button
+                  className="add-more-button"
+                  type="button"
+                  onClick={() => inputRef.current?.click()}
+                >
+                  + Thêm ảnh vào hàng đợi
+                </button>
               )}
             </div>
           </div>

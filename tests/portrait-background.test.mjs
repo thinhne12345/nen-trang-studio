@@ -13,11 +13,16 @@ test("uses portrait matting before compositing onto solid white", async () => {
   assert.match(processor, /"Xenova\/modnet"/);
   assert.match(processor, /dtype:\s*"fp32"/);
   assert.match(processor, /removeDetachedAlphaIslands/);
+  assert.match(processor, /refinePortraitEdges/);
   assert.match(page, /fillStyle = "#ffffff"/);
   assert.match(page, /outputContext\.drawImage\(cutout/);
   assert.match(page, /multiple/);
   assert.match(page, /MAX_BATCH_SIZE = 20/);
-  assert.match(page, /for \(let index = 0; index < queue\.length; index\+\+\)/);
+  assert.match(page, /MAX_WORKSPACE_SIZE = 60/);
+  assert.match(page, /queueRef\.current\.push\(\.\.\.queue\)/);
+  assert.match(page, /setItems\(\(current\) => \[\.\.\.current, \.\.\.queue\]\)/);
+  assert.match(page, /while \(queueRef\.current\.length > 0\)/);
+  assert.doesNotMatch(page, /setItems\(queue\)/);
   assert.match(page, /canvasToBlob/);
   assert.match(page, /name:\s*file\.name/);
   assert.match(page, /exterior\.isWhiteBackground/);
